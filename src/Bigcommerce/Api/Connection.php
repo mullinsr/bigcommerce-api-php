@@ -40,7 +40,7 @@ class Connection
     private $failOnError = false;
 
     /**
-     * Manually follow location redirects. Used if CURLOPT_FOLLOWLOCATION
+     * Manually follow location redirects. Used if FOLLOWLOCATION
      * is unavailable due to open_basedir restriction.
      * @var boolean
      */
@@ -69,6 +69,28 @@ class Connection
      * as XML. Defaults to false (using JSON).
      */
     private $useXml = false;
+    
+    /**
+     * oAuth Client ID
+     *
+     * @var string
+     */
+    private $client_id;
+    
+    /**
+     * oAuth Access Token
+     *
+     * @var string
+     */
+    private $oauth_token;
+    
+    /**
+     * Hold the last request, so that we can retry if rate-limited.
+     *
+     * @var mixed
+     */
+    private $lastRequest;
+    
 
     /**
      * Initializes the connection object.
@@ -118,11 +140,20 @@ class Connection
     /**
      * Sets the HTTP basic authentication.
      */
-    public function authenticate($username, $password)
+    public function authenticateBasic($username, $password)
     {
         curl_setopt($this->curl, CURLOPT_USERPWD, "$username:$password");
     }
-
+    
+    /**
+     * Sets the HTTP oAuth autentication.
+     */
+    public function authenticateOauth($client_id, $oauth_token)
+    {
+    		$this->client_id   = $client_id;
+    		$this->oauth_token = $oauth_token;
+    	}
+    		
     /**
      * Set a default timeout for the request. The client will error if the
      * request takes longer than this to respond.
@@ -183,6 +214,11 @@ class Connection
         $this->responseHeaders = array();
         $this->lastError = false;
         $this->addHeader('Accept', $this->getContentType());
+        
+        if (isset($this->client_id) && isset($this->oauth_token)) {
+        		$this->addHeader('X-Auth-Client', $this->client_id);
+        		$this->addHeader('X-Auth-Token',  $this->oauth_token);
+        	}
 
         curl_setopt($this->curl, CURLOPT_POST, false);
         curl_setopt($this->curl, CURLOPT_PUT, false);
@@ -199,35 +235,48 @@ class Connection
      */
     private function handleResponse()
     {
-        if (curl_errno($this->curl)) {
-            throw new NetworkError(curl_error($this->curl), curl_errno($this->curl));
-        }
+    		if ($this->getHeader("X-Retry-After") !== null) { 		//If the request failed due to being rate limited, sleep and retry
+    			sleep($this->getHeader("X-Retry-After") + 1);		//Sleep
+    			$method = $this->lastRequest[0];
+    			if ($method != 'delete') { //get,post,put
+    				$url = $this->lastRequest[1];
+    				$query = $this->lastRequest[2];
+    				return $this->$method($url,$query);  //retry
+    			} else {	 //delete
+    				$url = $this->lastRequest[1];
+    				return $this->$method($url);	  //retry
+    			}
+    		} else {
+		    if (curl_errno($this->curl)) {
+		        throw new NetworkError(curl_error($this->curl), curl_errno($this->curl));
+		    }
 
-        $body = ($this->useXml) ? $this->getBody() : json_decode($this->getBody());
+		    $body = ($this->useXml) ? $this->getBody() : json_decode($this->getBody());
 
-        $status = $this->getStatus();
+		    $status = $this->getStatus();
 
-        if ($status >= 400 && $status <= 499) {
-            if ($this->failOnError) {
-                throw new ClientError($body, $status);
-            } else {
-                $this->lastError = $body;
-                return false;
-            }
-        } elseif ($status >= 500 && $status <= 599) {
-            if ($this->failOnError) {
-                throw new ServerError($body, $status);
-            } else {
-                $this->lastError = $body;
-                return false;
-            }
-        }
+		    if ($status >= 400 && $status <= 499) {
+		        if ($this->failOnError) {
+		            throw new ClientError($body, $status);
+		        } else {
+		            $this->lastError = $body;
+		            return false;
+		        }
+		    } else if ($status >= 500 && $status <= 599) {
+		        if ($this->failOnError) {
+		            throw new ServerError($body, $status);
+		        } else {
+		            $this->lastError = $body;
+		            return false;
+		        }
+		    }
 
-        if ($this->followLocation) {
-            $this->followRedirectPath();
-        }
+		    if ($this->followLocation) {
+		        $this->followRedirectPath();
+		    }
 
-        return $body;
+		    return $body;
+		}
     }
 
     /**
@@ -280,6 +329,12 @@ class Connection
      */
     public function get($url, $query = false)
     {
+    		$this->lastRequest = array( //Save the resquest so we can retry if rate limited
+			0 => 'get',
+			1 => $url,
+			2 => $query
+		);
+			
         $this->initializeRequest();
 
         if (is_array($query)) {
@@ -290,7 +345,7 @@ class Connection
         curl_setopt($this->curl, CURLOPT_URL, $url);
         curl_setopt($this->curl, CURLOPT_HTTPGET, true);
         curl_exec($this->curl);
-
+		
         return $this->handleResponse();
     }
 
@@ -299,6 +354,12 @@ class Connection
      */
     public function post($url, $body)
     {
+    		$this->lastRequest = array( //Save the resquest so we can retry if rate limited
+			0 => 'put',
+			1 => $url,
+			2 => $body
+		);
+    
         $this->addHeader('Content-Type', $this->getContentType());
 
         if (!is_string($body)) {
@@ -312,7 +373,7 @@ class Connection
         curl_setopt($this->curl, CURLOPT_POST, true);
         curl_setopt($this->curl, CURLOPT_POSTFIELDS, $body);
         curl_exec($this->curl);
-
+        		
         return $this->handleResponse();
     }
 
@@ -346,6 +407,12 @@ class Connection
      */
     public function put($url, $body)
     {
+    		$this->lastRequest = array( //Save the resquest so we can retry if rate limited
+			0 => 'put',
+			1 => $url,
+			2 => $body
+		);
+		
         $this->addHeader('Content-Type', $this->getContentType());
 
         if (!is_string($body)) {
@@ -367,7 +434,7 @@ class Connection
 
         fclose($handle);
         curl_setopt($this->curl, CURLOPT_INFILE, STDIN);
-
+		
         return $this->handleResponse();
     }
 
@@ -385,6 +452,11 @@ class Connection
         curl_setopt($this->curl, CURLOPT_URL, $url);
         curl_exec($this->curl);
 
+		$this->lastRequest = array( //Save the resquest so we can retry if rate limited
+			0 => 'delete',
+			1 => $url
+		);
+			
         return $this->handleResponse();
     }
 
