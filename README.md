@@ -65,13 +65,22 @@ in your autoload path (using Composer’s `vendor/autoload.php` hook is recommen
 
 Provide your credentials to the static configuration hook to prepare the API client
 for connecting to a store on the Bigcommerce platform:
-
+**Basic API Authentication:**
 ```
 Bigcommerce::configure(array(
 	'store_url' => 'https://store.mybigcommerce.com',
 	'username'	=> 'admin',
 	'api_key'	=> 'd81aada4c19c34d913e18f07fd7f36ca'
 ));
+```
+
+**oAuth API Authentication:**
+```
+Bigcommerce::configure(array(
+	'store_hash'    => 'xx',
+	'oauth_token'	=> 'xx',
+	'client_id'	=> 'xx'
+), true);
 ```
 
 Connecting to the store
