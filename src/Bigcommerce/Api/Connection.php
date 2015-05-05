@@ -355,7 +355,7 @@ class Connection
     public function post($url, $body)
     {
     		$this->lastRequest = array( //Save the resquest so we can retry if rate limited
-			0 => 'put',
+			0 => 'post',
 			1 => $url,
 			2 => $body
 		);
